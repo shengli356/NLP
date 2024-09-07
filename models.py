@@ -4,6 +4,7 @@
 
 from sentiment_data import *
 from utils import *
+import math
 
 import string
 
@@ -85,16 +86,167 @@ class BigramFeatureExtractor(FeatureExtractor):
     Bigram feature extractor analogous to the unigram one.
     """
     def __init__(self, indexer: Indexer):
-        raise Exception("Must be implemented")
+        self.indexer = indexer
+        # Hardcoded stopword list
+        # self.stop_words = set([
+        #     'i', 'me', 'my', 'myself', 'we', 'our', 'ours', 'ourselves', 'you', 'your', 'yours', 'yourself', 'yourselves',
+        #     'he', 'him', 'his', 'himself', 'she', 'her', 'hers', 'herself', 'it', 'its', 'itself', 'they', 'them',
+        #     'their', 'theirs', 'themselves', 'what', 'which', 'who', 'whom', 'this', 'that', 'these', 'those', 'am',
+        #     'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have', 'has', 'had', 'having', 'do', 'does', 'did',
+        #     'doing', 'a', 'an', 'the', 'and', 'but', 'if', 'or', 'because', 'as', 'until', 'while', 'of', 'at', 'by',
+        #     'for', 'with', 'about', 'against', 'between', 'into', 'through', 'during', 'before', 'after', 'above',
+        #     'below', 'to', 'from', 'up', 'down', 'in', 'out', 'on', 'off', 'over', 'under', 'again', 'further', 'then',
+        #     'once', 'here', 'there', 'when', 'where', 'why', 'how', 'all', 'any', 'both', 'each', 'few', 'more', 'most',
+        #     'other', 'some', 'such', 'no', 'nor', 'not', 'only', 'own', 'same', 'so', 'than', 'too', 'very', 's', 't',
+        #     'can', 'will', 'just', 'don', 'should', 'now'
+        # ])
+        # Translation table to remove punctuation
+        # self.translator = str.maketrans('', '', string.punctuation)        
+    
+    def get_indexer(self):
+        return self.indexer
+    
+    def clean_word(self, word: str) -> str:
+        """
+        Clean and preprocess the word by lowercasing it and removing punctuation.
+        :param word: Word to clean
+        :return: Cleaned word
+        """
+        return word.lower().strip()
+    
+    def extract_features(self, sentence: List[str], add_to_indexer: bool = False) -> Counter:
+        """
+        Extract bigram features from a sentence.
+
+        :param sentence: List of words in the sentence.
+        :param add_to_indexer: If True, add new bigrams to the indexer. If False, don't add new bigrams.
+        :return: A Counter representing the sparse feature vector (bigram counts).
+        """
+        feature_vector = Counter()
+
+        # Clean the sentence by removing punctuation and stopwords
+        # clean_sentence = [
+        #     self.clean_word(word) for word in sentence
+        #     if self.clean_word(word) not in self.stop_words and len(self.clean_word(word)) > 0
+        # ]        
+
+        # Interate through each adjacent pair of words (bigrams) in the sentence
+        for i in range(len(sentence) - 1):
+            # Create the bigram
+            bigram = (sentence[i].lower().strip(), sentence[i+1].lower().strip()) 
+
+            # Create a string representation
+            bigram_str = f"{bigram[0]}_{bigram[1]}"
+
+            # Check if we are allowed to add new features to the indexer
+            if add_to_indexer:
+                index = self.indexer.add_and_get_index(bigram_str, add=True)
+            else:
+                index = self.indexer.index_of(bigram_str)
+
+            if index != -1:
+                feature_vector[index] += 1
+
+        return feature_vector       
 
 
 class BetterFeatureExtractor(FeatureExtractor):
     """
     Better feature extractor...try whatever you can think of!
     """
-    def __init__(self, indexer: Indexer):
-        raise Exception("Must be implemented")
+    def __init__(self, indexer: Indexer, documents: List[List[str]], top_k=1000):
+        self.indexer = indexer
+        self.documents = documents
+        self.top_k = top_k 
+        self.idf_cache = {}
+        self._compute_idf()
+    
+    def _compute_idf(self):
+        """
+        Precompute the IDF values for all words and bigrams across the entire document set.
+        """
+        # Dictionary to hold the document frequency of each term
+        df_counter = defaultdict(int)
+        num_documents = len(self.documents)
 
+        # Iterate over all documents to calculate document frequecies (DF)
+        for document in self.documents:
+            unique_terms = set()
+
+            # Add unigrams
+            for word in document:
+                clean_word = self.clean_word(word)
+
+            # Add bigrams
+            for i in range(len(document) - 1):
+                bigram = f"{self.clean_word(document[i])}_{self.clean_word(document[i+1])}"
+                if bigram:
+                    unique_terms.add(bigram)
+
+            # Update DF count for all terms in the document
+            for term in unique_terms:
+                df_counter[term] += 1    
+
+        # Only keep the top-k terms in the idf_cache
+        for term, df in df_counter.items():
+            self.idf_cache[term] = math.log(num_documents / (df+1)) # Adding 1 to avoid division by zero
+
+    def get_indexer(self):
+        return self.indexer
+    
+    def clean_word(self, word: str) -> str:
+        """
+        Clean and preprocess the word by lowercasing it and removing punctuation.
+        :param word: Word to clean
+        :return: Cleaned word
+        """
+        word = word.lower().strip()     
+        return word if word else None
+
+    def extract_features(self, sentence: List[str], add_to_indexer: bool = False) -> Counter:
+        """
+        Extract TF-IDF features from a sentence.
+
+        :param sentence: List of words in the sentence.
+        :param add_to_indexer: If True, add new terms to the indexer. If False, don't add new terms.
+        :return: A Counter representing the sparse TF-IDF feature vector.
+        """
+        feature_vector = Counter()
+        term_count = defaultdict(int)
+        total_terms = 0
+
+        # Preprocess sentence and count unigrams and bigrams
+        cleaned_sentence = []
+        for word in sentence:
+            clean_word = self.clean_word(word)
+            if clean_word:
+                cleaned_sentence.append(clean_word)
+                term_count[clean_word] += 1
+                total_terms += 1
+
+        # Extract bigrams and count them
+        for i in range(len(cleaned_sentence) - 1):
+            bigram = f"{cleaned_sentence[i]}_{cleaned_sentence[i + 1]}"
+            term_count[bigram] += 1
+            total_terms += 1
+
+        # Compute TF-IDF for unigrams and bigrams
+        for term, count in term_count.items():
+            tf = count / total_terms  # Term Frequency
+            idf = self.idf_cache.get(term, 0)  # Inverse Document Frequency
+            tf_idf = tf * idf
+
+            # Add feature to the indexer if applicable
+            if add_to_indexer:
+                index = self.indexer.add_and_get_index(term, add=True)
+            else:
+                index = self.indexer.index_of(term)
+
+            # If term is in the indexer, add its TF-IDF value to the feature vector
+            if index != -1:
+                feature_vector[index] = tf_idf
+
+        return feature_vector            
 
 class SentimentClassifier(object):
     """
@@ -188,7 +340,7 @@ class LogisticRegressionClassifier(SentimentClassifier):
     superclass. Hint: you'll probably need this class to wrap both the weight vector and featurizer -- feel free to
     modify the constructor to pass these in.
     """
-    def __init__(self, indexer: Indexer, feature_extractor: FeatureExtractor, learning_rate=0.01, num_epochs=150):
+    def __init__(self, indexer: Indexer, feature_extractor: FeatureExtractor, learning_rate=0.01, num_epochs=125):
         self.indexer = Indexer
         self.feature_extractor = feature_extractor
         self.learning_rate = learning_rate
@@ -326,7 +478,8 @@ def train_model(args, train_exs: List[SentimentExample], dev_exs: List[Sentiment
         feat_extractor = BigramFeatureExtractor(Indexer())
     elif args.feats == "BETTER":
         # Add additional preprocessing code here
-        feat_extractor = BetterFeatureExtractor(Indexer())
+        train_docs = [ex.words for ex in train_exs]
+        feat_extractor = BetterFeatureExtractor(Indexer(), train_docs)
     else:
         raise Exception("Pass in UNIGRAM, BIGRAM, or BETTER to run the appropriate system")
 
